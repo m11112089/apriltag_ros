@@ -15,10 +15,14 @@
 #include <sensor_msgs/msg/image.hpp>
 #include <tf2_ros/transform_broadcaster.h>
 
+// my stuff
 #include <message_filters/subscriber.h>
 #include <message_filters/sync_policies/approximate_time.h>
 #include <message_filters/synchronizer.h>
 #include <image_transport/subscriber_filter.hpp>
+#include <geometry_msgs/msg/pose_array.hpp>
+#include <geometry_msgs/msg/pose.hpp>
+// my stuff
 
 // apriltag
 #include "tag_functions.hpp"
@@ -84,14 +88,14 @@ private:
     std::function<void(apriltag_family_t*)> tf_destructor;
 
     // const image_transport::CameraSubscriber sub_cam;
+    // my stuff
+    rclcpp::Publisher<geometry_msgs::msg::PoseArray>::SharedPtr pub_poses_;
     image_transport::SubscriberFilter image_subscriber_;
-    // Message filters subscriber for camera info
     message_filters::Subscriber<sensor_msgs::msg::CameraInfo> camera_info_subscriber_;
-    // Synchronizer
     using SyncPolicy = message_filters::sync_policies::ApproximateTime<sensor_msgs::msg::Image, sensor_msgs::msg::CameraInfo>;
     using Synchronizer = message_filters::Synchronizer<SyncPolicy>;
     std::shared_ptr<Synchronizer> synchronizer_;
-
+    // my stuff
     const rclcpp::Publisher<apriltag_msgs::msg::AprilTagDetectionArray>::SharedPtr pub_detections;
     tf2_ros::TransformBroadcaster tf_broadcaster;
 
@@ -120,10 +124,15 @@ AprilTagNode::AprilTagNode(const rclcpp::NodeOptions& options)
     pub_detections(create_publisher<apriltag_msgs::msg::AprilTagDetectionArray>("detections", rclcpp::QoS(1))),
     tf_broadcaster(this)
 {
-    image_subscriber_.subscribe(this, declare_parameter("image_rect", "raw", descr({}, true)), "raw", rclcpp::SensorDataQoS().get_rmw_qos_profile());
-    camera_info_subscriber_.subscribe(this, declare_parameter("camera_info", "raw", descr({}, true)));
+    // my stuff
+    pub_poses_ = this->create_publisher<geometry_msgs::msg::PoseArray>("apriltag_poses", 1);
+    // my stuff
+    image_subscriber_.subscribe(this, declare_parameter("image_rect", "/camera/camera/color/image_raw", descr({}, true)), "raw", rclcpp::SensorDataQoS().get_rmw_qos_profile());
+    camera_info_subscriber_.subscribe(this, declare_parameter("camera_info", "/camera/camera/color/camera_info", descr({}, true)));
+    RCLCPP_INFO(get_logger(), "Subscribing to %s and %s", image_subscriber_.getTopic().c_str(), camera_info_subscriber_.getTopic().c_str());
     synchronizer_ = std::make_shared<Synchronizer>(SyncPolicy(10), image_subscriber_, camera_info_subscriber_);
     synchronizer_->registerCallback(std::bind(&AprilTagNode::onCamera, this, std::placeholders::_1, std::placeholders::_2));
+    // my stuff
 
     // read-only parameters
     const std::string tag_family = declare_parameter("family", "36h11", descr("tag family", true));
@@ -202,6 +211,10 @@ void AprilTagNode::onCamera(const sensor_msgs::msg::Image::ConstSharedPtr& msg_i
     msg_detections.header = msg_img->header;
 
     std::vector<geometry_msgs::msg::TransformStamped> tfs;
+    // my stuff
+    geometry_msgs::msg::PoseArray poses;
+    poses.header = msg_img->header;
+    // my stuff
 
     for(int i = 0; i < zarray_size(detections); i++) {
         apriltag_detection_t* det;
@@ -236,15 +249,32 @@ void AprilTagNode::onCamera(const sensor_msgs::msg::Image::ConstSharedPtr& msg_i
         // set child frame name by generic tag name or configured tag name
         tf.child_frame_id = tag_frames.count(det->id) ? tag_frames.at(det->id) : std::string(det->family->name) + ":" + std::to_string(det->id);
         const double size = tag_sizes.count(det->id) ? tag_sizes.at(det->id) : tag_edge_size;
+
+        // my stuff
+        geometry_msgs::msg::Pose pose;
+        // my stuff
         if(estimate_pose != nullptr) {
             tf.transform = estimate_pose(det, intrinsics, size);
+            // my stuff
+            pose.position.x = tf.transform.translation.x;
+            pose.position.y = tf.transform.translation.y;
+            pose.position.z = tf.transform.translation.z;
+            pose.orientation = tf.transform.rotation;
+            // my stuff
         }
 
         tfs.push_back(tf);
+        // my stuff
+        poses.poses.push_back(pose);
+        // my stuff
+
     }
 
     pub_detections->publish(msg_detections);
     tf_broadcaster.sendTransform(tfs);
+    // my stuff
+    pub_poses_->publish(poses);
+    // my stuff
 
     apriltag_detections_destroy(detections);
 }
